@@ -215,7 +215,7 @@ if not df_filtered.empty:
         'question', 'réponse', 'dire', 'dis', 'dit', 'faut', 'fois', 'année', 'années',
         'cette', 'notre', 'votre', 'leur', 'leurs', 'entre', 'encore', 'alors', 'après', 'avant',
         'chers', 'chères', 'collègues', 'groupe', 'socialiste','udc', 'libéral', 'radical', 'centre','vertpop',
-        'parce','peut', 'selon', 'puis','allons'
+        'parce','peut', 'selon', 'puis','allons', 'séance', 'motion'
     ])
 
     col1, col2 = st.columns(2)
