@@ -312,6 +312,154 @@ if not df_filtered.empty:
                 humeur = "Neutre 😐"
 
             st.caption(f"Humeur générale : **{humeur}**")
+
+# ==========================================
+# 7 BIS. LA BOUSSOLE POLITIQUE (CORRIGÉE) 🧭
+# ==========================================
+if not df_filtered.empty:
+    st.markdown("---")
+    st.subheader("🧭 La Boussole Politique")
+    st.caption("Positionnement relatif calculé sur le vocabulaire (centré sur la moyenne du conseil).")
+
+    # 1. LISTES AFFINÉES (POUR ÉVITER LE BIAIS "RÉGULATEUR")
+    # J'ai retiré "loi", "canton", "état", "commune" qui polluaient tout.
+
+    # AXE X : ÉCONOMIE (Gauche vs Droite Éco)
+    mots_regulateur = [
+        'subvention', 'aide', 'prestation', 'social', 'protection', 'solidaire',
+        'redistribution', 'taxe', 'impôt', 'contrainte', 'interdiction', 'service public',
+        'salarié', 'syndicat', 'précarité', 'soutien', 'bénéficiaire'
+    ]
+    mots_liberale = [
+        'liberté', 'privé', 'entreprise', 'pme', 'marché', 'concurrence',
+        'initiative', 'baisse', 'moins', 'responsabilité', 'coût', 'efficience',
+        'efficacité', 'dérégulation', 'attractivité', 'fiscalité', 'investisseur',
+        'frein', 'charge', 'charges', 'dynamisme'
+    ]
+
+    # AXE Y : SOCIÉTÉ (Conservateur vs Progressiste)
+    mots_progressiste = [
+        'climat', 'environnement', 'durabilité', 'écologie', 'biodiversité',
+        'transition', 'égalité', 'genre', 'ouverture', 'diversité', 'inclusion',
+        'culture', 'innovation', 'réforme', 'monde', 'europe', 'accueil'
+    ]
+    mots_conservateur = [
+        'sécurité', 'ordre', 'police', 'armée', 'tradition', 'patrimoine',
+        'histoire', 'racines', 'famille', 'suisse', 'souveraineté', 'indépendance',
+        'stabilité', 'prudence', 'rigueur', 'frontière', 'identit', 'héritage'
+    ]
+
+
+    # 2. FONCTION DE CALCUL (Simple compte)
+    def calculate_raw_score(text):
+        t = str(text).lower()
+        # On utilise une petite astuce pour éviter de compter "état" dans "état civil"
+        # Mais pour l'instant, le compte simple suffit si les listes sont bonnes
+        c_reg = sum(t.count(w) for w in mots_regulateur)
+        c_lib = sum(t.count(w) for w in mots_liberale)
+        c_prog = sum(t.count(w) for w in mots_progressiste)
+        c_cons = sum(t.count(w) for w in mots_conservateur)
+
+        total = max(len(t.split()), 1)  # Évite division par 0
+
+        # Score brut (Densité)
+        raw_x = (c_lib - c_reg) / total * 10000
+        raw_y = (c_prog - c_cons) / total * 10000
+
+        return raw_x, raw_y
+
+
+    # 3. CALCUL GLOBAL ET NORMALISATION (LE SECRET POUR QUE ÇA MARCHE)
+    @st.cache_data
+    def get_centered_positions(df_source):
+        # A. On calcule les scores bruts pour tout le monde
+        data = []
+        grouped = df_source.groupby('Orateur')['Texte'].apply(lambda x: " ".join(x)).reset_index()
+
+        for index, row in grouped.iterrows():
+            if row['Orateur'] in ["Inconnu", "Tous les membres"]: continue
+            rx, ry = calculate_raw_score(row['Texte'])
+
+            # On récupère le parti (le plus fréquent pour cet orateur)
+            partis = df_source[df_source['Orateur'] == row['Orateur']]['Parti']
+            parti_top = partis.value_counts().idxmax() if not partis.empty else "Indéterminé"
+
+            data.append({'Orateur': row['Orateur'], 'Parti': parti_top, 'Raw_X': rx, 'Raw_Y': ry})
+
+        df_res = pd.DataFrame(data)
+
+        if df_res.empty: return df_res
+
+        # B. ON CENTRE LE GRAPHIQUE (Moyenne = 0)
+        # Ça force les points à s'étaler autour du centre
+        mean_x = df_res['Raw_X'].mean()
+        mean_y = df_res['Raw_Y'].mean()
+
+        df_res['X'] = df_res['Raw_X'] - mean_x
+        df_res['Y'] = df_res['Raw_Y'] - mean_y
+
+        return df_res
+
+
+    compass_df = get_centered_positions(df)
+
+    # 4. AFFICHAGE DU GRAPHIQUE
+    if not compass_df.empty:
+        # Configuration visuelle
+        compass_df['Color'] = 'Autres'
+        compass_df['Size'] = 60
+        compass_df['Opacity'] = 0.4
+
+        if selected_orateur != "Tous les membres":
+            # Mise en évidence
+            mask = compass_df['Orateur'] == selected_orateur
+            compass_df.loc[mask, 'Color'] = 'Sélectionné'
+            compass_df.loc[mask, 'Size'] = 200
+            compass_df.loc[mask, 'Opacity'] = 1.0
+
+        # Tooltip riche
+        tooltip_info = [
+            alt.Tooltip('Orateur', title='Nom'),
+            alt.Tooltip('Parti', title='Parti'),
+            alt.Tooltip('X', format='.1f', title='Score Eco'),
+            alt.Tooltip('Y', format='.1f', title='Score Soc')
+        ]
+
+        # Chart principal
+        points = alt.Chart(compass_df).mark_circle().encode(
+            x=alt.X('X', title='← Régulateur | Libéral →'),
+            y=alt.Y('Y', title='↓ Conservateur | Progressiste ↑'),
+            color=alt.Color('Color', scale=alt.Scale(domain=['Autres', 'Sélectionné'], range=['gray', 'red']),
+                            legend=None),
+            size=alt.Size('Size', legend=None),
+            opacity=alt.Opacity('Opacity', legend=None),
+            tooltip=tooltip_info
+        )
+
+        # Lignes médianes (Zéro)
+        rules = alt.Chart(pd.DataFrame({'z': [0]})).mark_rule(color='black', strokeDash=[2, 2], opacity=0.3)
+        rule_x = rules.encode(x='z')
+        rule_y = rules.encode(y='z')
+
+        # Texte des Partis (Optionnel : affiche le nom du parti au centre de gravité du parti)
+        # On peut l'ajouter si tu veux, mais ça charge le graph.
+
+        final_chart = (points + rule_x + rule_y).properties(
+            height=500,
+            title="Positionnement relatif (Centré)"
+        ).interactive()
+
+        st.altair_chart(final_chart, use_container_width=True)
+
+        # Légende explicative
+        st.info("""
+        💡 **Comment lire ce graphique ?**
+        Le point (0,0) représente la **moyenne** du Grand Conseil.
+        - Un point à **droite** signifie "Plus libéral que la moyenne".
+        - Un point en **haut** signifie "Plus progressiste que la moyenne".
+        """)
+
+#8 : LISTE INTERVENTIONS
 st.markdown("---")
 st.header("📝 Liste des interventions")
 
