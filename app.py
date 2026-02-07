@@ -312,3 +312,45 @@ if not df_filtered.empty:
                 humeur = "Neutre 😐"
 
             st.caption(f"Humeur générale : **{humeur}**")
+st.markdown("---")
+st.header("📝 Liste des interventions")
+
+if search_query:
+    # CAS 1 : RECHERCHE ACTIVE
+    # On affiche tout directement pour voir les résultats
+    st.subheader(f"Résultats trouvés : {len(df_filtered)}")
+
+    for index, row in df_filtered.iterrows():
+        titre = f"📅 {row['Date']} | {row['Orateur']} | 📂 {row['Objet']}"
+        with st.expander(titre):
+            # Surlignage du mot-clé trouvé
+            flags = 0 if case_sensitive else re.IGNORECASE
+            # On échappe la query pour éviter les erreurs regex s'il y a des parenthèses
+            safe_query = re.escape(search_query)
+            texte_surligne = re.sub(f"({safe_query})", r"**\1**", row['Texte'], flags=flags)
+
+            st.markdown(f"**Parti :** {row['Parti']}")
+            st.markdown(texte_surligne)
+
+else:
+    # CAS 2 : NAVIGATION NORMALE
+    # On met une case à cocher pour ne pas polluer l'écran si on veut juste voir les stats
+    objets_uniques = df_filtered['Objet'].unique()
+
+    label_checkbox = f"📂 Afficher le détail des textes ({len(df_filtered)} interventions)"
+    show_details = st.checkbox(label_checkbox, value=False)
+
+    if show_details:
+        # On regroupe par Objet pour que ce soit plus propre
+        for objet in objets_uniques:
+            subset = df_filtered[df_filtered['Objet'] == objet]
+            # On trie les interventions par date/ordre d'apparition
+            subset = subset.sort_index()
+
+            titre_dossier = f"📂 {objet} ({len(subset)} interventions)"
+
+            with st.expander(titre_dossier):
+                for _, row in subset.iterrows():
+                    st.markdown(f"**📅 {row['Date']} | 👤 {row['Orateur']} ({row['Parti']})**")
+                    st.write(row['Texte'])
+                    st.divider()
