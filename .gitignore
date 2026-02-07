@@ -3,3 +3,5 @@ __pycache__/
 venv/
 *.pdf
 /debug_pdf.py
+.devcontainer/
+stop_words.txt
