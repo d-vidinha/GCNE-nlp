@@ -7,6 +7,9 @@ from datetime import datetime
 import altair as alt
 from textblob import Blobber
 from textblob_fr import PatternTagger, PatternAnalyzer
+from sklearn.feature_extraction.text import CountVectorizer
+from sklearn.decomposition import LatentDirichletAllocation
+import spacy
 
 # 1. CONFIGURATION DE LA PAGE
 st.set_page_config(page_title="Grand Conseil Explorer", page_icon="🏛️", layout="wide")
@@ -193,128 +196,126 @@ if df_filtered.empty:
     st.warning("Aucune intervention ne correspond à vos critères.")
     st.stop()
 
-# 7. ANALYSE SÉMANTIQUE
-# On enlève la condition restrictive pour que ça s'affiche tout le temps (même au global)
-if not df_filtered.empty:
-    st.subheader("📊 Analyse du vocabulaire")
+# ==========================================
+# 7. ANALYSE SÉMANTIQUE (CASES À COCHER + SPACY)
+# ==========================================
+import spacy
+from collections import Counter
 
-    STOP_WORDS = set([
-        'le', 'la', 'les', 'un', 'une', 'des', 'du', 'de', 'au', 'aux',
-        'et', 'ou', 'mais', 'donc', 'or', 'ni', 'car', 'que', 'qui', 'quoi', 'dont', 'où',
-        'ce', 'cet', 'cette', 'ces', 'ca', 'ça', 'cela', 'ceci',
-        'je', 'tu', 'il', 'elle', 'nous', 'vous', 'ils', 'elles', 'on',
-        'mon', 'ton', 'son', 'ma', 'ta', 'sa', 'mes', 'tes', 'ses', 'notre', 'votre', 'leur', 'nos', 'vos', 'leurs',
-        'être', 'suis', 'es', 'est', 'sommes', 'êtes', 'sont', 'été', 'étais', 'était',
-        'avoir', 'ai', 'as', 'a', 'avons', 'avez', 'ont', 'eu', 'avais', 'avait',
-        'faire', 'fait', 'fais', 'font', 'aller', 'vais', 'va', 'vont',
-        'plus', 'moins', 'très', 'trop', 'peu', 'beaucoup', 'tout', 'toute', 'tous', 'toutes',
-        'aussi', 'ici', 'là', 'bien', 'mal', 'si', 'non', 'oui', 'ne', 'pas', 'y', 'en',
-        'pour', 'par', 'dans', 'sur', 'sous', 'vers', 'avec', 'sans', 'chez', 'comme',
-        'monsieur', 'madame', 'messieurs', 'mesdames', 'président', 'présidente',
-        'député', 'députée', 'conseiller', 'conseillère', 'état', 'grand', 'conseil',
-        'rapport', 'commission', 'projet', 'loi', 'article', 'articles', 'alinéa',
-        'vote', 'voter', 'voix', 'majorité', 'minorité', 'parole', 'merci', 'chose',
-        'question', 'réponse', 'dire', 'dis', 'dit', 'faut', 'fois', 'année', 'années',
-        'cette', 'notre', 'votre', 'leur', 'leurs', 'entre', 'encore', 'alors', 'après', 'avant',
-        'chers', 'chères', 'collègues', 'groupe', 'socialiste','udc', 'libéral', 'radical', 'centre','vertpop',
-        'parce','peut', 'selon', 'puis','allons', 'séance', 'motion', 'même','ainsi','soit','déjà', 'pensons','lors'
-    ])
+
+@st.cache_resource
+def load_spacy_model():
+    try:
+        if not spacy.util.is_package("fr_core_news_sm"):
+            spacy.cli.download("fr_core_news_sm")
+        return spacy.load("fr_core_news_sm")
+    except Exception as e:
+        return None
+
+
+# TA LISTE NOIRE (Ajoute des mots ici pour les cacher)
+CUSTOM_STOP_WORDS = {
+    'monsieur', 'madame', 'président', 'présidente', 'député', 'députée',
+    'conseiller', 'conseillère', 'état', 'grand', 'conseil', 'parole',
+    'merci', 'voix', 'vote', 'voter', 'année', 'années', 'fois', 'jour',
+    'aujourd', 'hui', 'chose', 'question', 'réponse', 'projet', 'loi',
+    'rapport', 'commission', 'groupe', 'nom', 'objet', 'alinéa', 'article',
+    'chers', 'chères', 'collègues', 'canton', 'république', 'neuchâtel'
+}
+
+if not df_filtered.empty:
+    nlp = load_spacy_model()
+
+    st.subheader("📊 Analyse du vocabulaire")
 
     col1, col2 = st.columns(2)
 
-    # --- COLONNE GAUCHE : LE TOP 20 (S'AFFICHE TOUJOURS) ---
+    # --- COLONNE GAUCHE : LES FRÉQUENCES ---
     with col1:
-        all_text = " ".join(df_filtered['Texte'].tolist()).lower()
-        # Regex pour ne garder que les mots de 4 lettres et plus
-        words = re.findall(r'\b[a-zàâçéèêëîïôûùüÿñ]{4,}\b', all_text)
-        meaningful_words = [w for w in words if w not in STOP_WORDS]
-        word_counts = Counter(meaningful_words).most_common(50)
+        st.write("### 🏆 Top des Mots")
 
-        if word_counts:
-            # Création d'un DataFrame propre pour Altair
-            df_words = pd.DataFrame(word_counts, columns=['Mot', 'Fréquence'])
+        # SÉLECTEUR AVEC CASES À COCHER (CHECKBOX)
+        st.caption("Quels types de mots inclure ?")
+        c_chk1, c_chk2, c_chk3, c_chk4 = st.columns(4)
 
-            titre_graph = "**Top 50 global**" if selected_orateur == "Tous les membres" else "**Ses mots favoris**"
-            st.write(titre_graph)
+        check_noun = c_chk1.checkbox("Noms", value=True)
+        check_adj = c_chk2.checkbox("Adj.", value=True)
+        check_verb = c_chk3.checkbox("Verbes", value=False)
+        check_propn = c_chk4.checkbox("Noms Pr.", value=False)  # Noms Propres
 
-            # Graphique Altair trié
-            c = alt.Chart(df_words).mark_bar().encode(
-                x='Fréquence',
-                y=alt.Y('Mot', sort='-x')
-            )
-            st.altair_chart(c, use_container_width=True)
+        # Construction de la liste des tags SpaCy
+        selected_tags = []
+        if check_noun: selected_tags.append("NOUN")
+        if check_adj: selected_tags.append("ADJ")
+        if check_verb: selected_tags.append("VERB")
+        if check_propn: selected_tags.append("PROPN")
+
+        if nlp and selected_tags:
+            # On prend un échantillon du texte
+            full_text = " ".join(df_filtered['Texte'].tolist())[:150000]
+
+            with st.spinner("Analyse..."):
+                doc = nlp(full_text)
+                mots_propres = []
+
+                for token in doc:
+                    mot_racine = token.lemma_.lower()
+
+                    if token.pos_ in selected_tags:
+                        if not token.is_stop and not token.is_punct and len(mot_racine) > 2:
+                            if mot_racine not in CUSTOM_STOP_WORDS:
+                                mots_propres.append(mot_racine)
+
+                word_counts = Counter(mots_propres).most_common(20)
+
+            if word_counts:
+                df_words = pd.DataFrame(word_counts, columns=['Mot', 'Fréquence'])
+
+                c = alt.Chart(df_words).mark_bar().encode(
+                    x='Fréquence',
+                    y=alt.Y('Mot', sort='-x'),
+                    tooltip=['Mot', 'Fréquence']
+                )
+                st.altair_chart(c, use_container_width=True)
+            else:
+                st.info("Aucun mot trouvé avec ces filtres.")
         else:
-            st.info("Données insuffisantes pour l'analyse.")
+            st.warning("Cochez au moins une case ci-dessus.")
 
-    # --- COLONNE DROITE : LES STATS ---
+    # --- COLONNE DROITE : LE STYLE ---
     with col2:
         if selected_orateur == "Tous les membres":
             st.write("**Répartition par Parti :**")
             st.bar_chart(df_filtered['Parti'].value_counts())
         else:
-            # A. Stats classiques
             avg_len = df_filtered['Texte'].str.len().mean()
             st.metric("Longueur moyenne", f"{int(avg_len)} caractères")
-            st.metric("Richesse lexicale", f"{len(set(meaningful_words))} mots uniques")
-
             st.divider()
 
-            # B. ANALYSE NLP : SUBJECTIVITÉ 🧠
-            st.write("### 🧠 Analyse NLP")
+            st.write("### 🧠 Analyse du Ton")
+            from textblob import Blobber
+            from textblob_fr import PatternTagger, PatternAnalyzer
 
-            # On prépare l'outil NLP pour le français
             tb = Blobber(pos_tagger=PatternTagger(), analyzer=PatternAnalyzer())
 
-            # On analyse un échantillon du texte (les 5000 premiers caractères pour que ça reste rapide)
-            # Analyser tout l'historique d'un coup peut prendre quelques secondes
-            sample_text = all_text[:5000]
-            blob = tb(sample_text)
-
-            # TextBlob nous donne deux scores : Polarity (Positif/Négatif) et Subjectivity (Factuel/Opinion)
-            # On s'intéresse à la subjectivité (index 1)
+            blob = tb(full_text[:5000])  # On réutilise un bout du texte
             subjectivity = blob.sentiment[1]
-
-            # Interprétation du score (0 = Très Objectif, 1 = Très Subjectif)
             score_percent = int(subjectivity * 100)
 
-            # Seuils ajustés pour le discours politique (qui est souvent entre 0.1 et 0.4)
             if score_percent < 15:
-                label = "🤖 Le Factuel"
-                desc = "Discours très objectif, descriptif, chiffré."
-                color = "blue"
+                label, icon = "Le Factuel", "🤖"
             elif score_percent < 30:
-                label = "⚖️ L'Analyste"
-                desc = "Équilibre entre faits et opinions."
-                color = "orange"
+                label, icon = "L'Analyste", "⚖️"
             else:
-                label = "❤️ Le Passionné"
-                desc = "Discours chargé d'opinions, de jugements et d'émotions."
-                color = "red"
+                label, icon = "Le Passionné", "❤️"
 
-            st.metric(
-                label="Ton détecté (Subjectivité)",
-                value=f"{label}",
-                delta=f"{score_percent}/100 Subjectivité"
-            )
-            st.caption(desc)
+            st.metric(label="Style détecté", value=f"{icon} {label}", delta=f"{score_percent}% Subjectivité")
+            st.progress(min(score_percent * 2.5 / 100, 1.0))
 
-            # Jauge visuelle
-            st.progress(min(score_percent * 2.5 / 100,
-                            1.0))  # On multiplie pour mieux voir les différences (l'échelle politique est souvent basse)
-
-            # Petit bonus : Sentiment (Positif vs Négatif)
-            polarity = blob.sentiment[0]
-            if polarity > 0.1:
-                humeur = "Positivité ☀️"
-            elif polarity < -0.1:
-                humeur = "Négativité 🌧️"
-            else:
-                humeur = "Neutre 😐"
-
-            st.caption(f"Humeur générale : **{humeur}**")
+    st.markdown("---")
 
 # ==========================================
-# 7 BIS. LA BOUSSOLE POLITIQUE (CORRIGÉE) 🧭
+# 8 LA BOUSSOLE POLITIQUE (CORRIGÉE) 🧭
 # ==========================================
 if not df_filtered.empty:
     st.markdown("---")
@@ -502,3 +503,63 @@ else:
                     st.markdown(f"**📅 {row['Date']} | 👤 {row['Orateur']} ({row['Parti']})**")
                     st.write(row['Texte'])
                     st.divider()
+# ==========================================
+# 9. CHRONOLOGIE : L'ÉVOLUTION COMPARÉE 📈
+# ==========================================
+if not df_filtered.empty:
+    st.markdown("---")
+    st.subheader("📈 Chronologie des débats")
+    st.caption("Comparez l'utilisation de deux termes dans le temps.")
+
+    # 1. SÉLECTEURS DE MOTS (COTE A COTE)
+    col_search_1, col_search_2 = st.columns(2)
+
+    # Suggestions intelligentes
+    all_words = " ".join(df_filtered['Texte'].tolist()).lower().split()
+    suggestions = [m for m in all_words if len(m) > 4]
+    top_suggestions = [m[0] for m in Counter(suggestions).most_common(5)]
+    default_word = top_suggestions[0] if top_suggestions else "budget"
+
+    with col_search_1:
+        mot1 = st.text_input("Mot 1 (Ligne Bleue)", value=default_word)
+    with col_search_2:
+        mot2 = st.text_input("Mot 2 (Ligne Orange - Optionnel)", placeholder="Ex: dépense")
+
+    if mot1:
+        # 2. PRÉPARATION DES DONNÉES
+        df_chrono = df_filtered.copy()
+
+        # Groupement par mois
+        df_chrono['Mois'] = df_chrono['Date_dt'].dt.to_period('M').astype(str)
+
+        # Comptage du Mot 1
+        df_chrono[mot1] = df_chrono['Texte'].str.lower().str.count(re.escape(mot1.lower()))
+
+        # Comptage du Mot 2 (si présent)
+        cols_to_keep = ['Mois', mot1]
+        if mot2:
+            df_chrono[mot2] = df_chrono['Texte'].str.lower().str.count(re.escape(mot2.lower()))
+            cols_to_keep.append(mot2)
+
+        # On fait la somme par mois
+        evolution = df_chrono.groupby('Mois')[cols_to_keep[1:]].sum().reset_index()
+
+        # 3. TRANSFORMATION POUR ALTAIR (Format "Long")
+        # Altair a besoin que les colonnes soient "fondues" pour faire des couleurs automatiques
+        evolution_melted = evolution.melt('Mois', var_name='Mot', value_name='Mentions')
+
+        # 4. VISUALISATION
+        if not evolution_melted.empty:
+            chart = alt.Chart(evolution_melted).mark_line(point=True).encode(
+                x=alt.X('Mois', title='Temps', axis=alt.Axis(labelAngle=-45)),
+                y=alt.Y('Mentions', title='Nombre d\'occurrences'),
+                color=alt.Color('Mot', title='Termes'),  # Légende automatique
+                tooltip=['Mois', 'Mot', 'Mentions']
+            ).properties(
+                height=400,
+                title=f"Comparaison : {mot1} vs {mot2}" if mot2 else f"Évolution de {mot1}"
+            ).interactive()
+
+            st.altair_chart(chart, use_container_width=True)
+        else:
+            st.warning("Aucune donnée pour cette période.")
