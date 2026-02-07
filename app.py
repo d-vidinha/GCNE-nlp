@@ -5,6 +5,8 @@ from collections import Counter
 import os
 from datetime import datetime
 import altair as alt
+from textblob import Blobber
+from textblob_fr import PatternTagger, PatternAnalyzer
 
 # 1. CONFIGURATION DE LA PAGE
 st.set_page_config(page_title="Grand Conseil Explorer", page_icon="🏛️", layout="wide")
@@ -215,7 +217,7 @@ if not df_filtered.empty:
         'question', 'réponse', 'dire', 'dis', 'dit', 'faut', 'fois', 'année', 'années',
         'cette', 'notre', 'votre', 'leur', 'leurs', 'entre', 'encore', 'alors', 'après', 'avant',
         'chers', 'chères', 'collègues', 'groupe', 'socialiste','udc', 'libéral', 'radical', 'centre','vertpop',
-        'parce','peut', 'selon', 'puis','allons', 'séance', 'motion'
+        'parce','peut', 'selon', 'puis','allons', 'séance', 'motion', 'même','ainsi','soit','déjà', 'pensons','lors'
     ])
 
     col1, col2 = st.columns(2)
@@ -246,71 +248,67 @@ if not df_filtered.empty:
 
     # --- COLONNE DROITE : LES STATS ---
     with col2:
-        # CAS 1 : VUE GLOBALE (Tous les membres)
         if selected_orateur == "Tous les membres":
             st.write("**Répartition par Parti :**")
             st.bar_chart(df_filtered['Parti'].value_counts())
-
-        # CAS 2 : VUE DÉTAILLÉE (Un orateur spécifique)
         else:
-            # A. Stats classiques (On les garde !)
+            # A. Stats classiques
             avg_len = df_filtered['Texte'].str.len().mean()
             st.metric("Longueur moyenne", f"{int(avg_len)} caractères")
             st.metric("Richesse lexicale", f"{len(set(meaningful_words))} mots uniques")
 
-            st.divider()  # Petite ligne de séparation
+            st.divider()
 
-            # B. LE COEFFICIENT "BUREAUCRATE vs TRIBUN" 🎭
-            # Mots-clés "Bureaucrate" (Technique, Loi, Procédure)
-            mots_tech = [
-                'article', 'alinéa', 'loi', 'règlement', 'décret', 'amendement',
-                'budget', 'comptes', 'commission', 'rapport', 'considérant',
-                'projet', 'modification', 'technique', 'mise en oeuvre', 'adoption'
-            ]
-            # Mots-clés "Tribun" (Valeurs, Émotion, Peuple)
-            mots_tribun = [
-                'peuple', 'citoyen', 'citoyens', 'liberté', 'justice', 'urgence',
-                'scandale', 'honte', 'grave', 'catastrophe', 'avenir', 'ensemble',
-                'combat', 'valeurs', 'démocratie', 'crise', 'climat', 'planète',
-                'droits', 'inacceptable', 'magnifique', 'solidarité'
-            ]
+            # B. ANALYSE NLP : SUBJECTIVITÉ 🧠
+            st.write("### 🧠 Analyse NLP")
 
-            # On compte (recherche exacte du mot entier pour éviter les faux positifs)
-            pattern_tech = r'\b(' + '|'.join(mots_tech) + r')\b'
-            pattern_tribun = r'\b(' + '|'.join(mots_tribun) + r')\b'
+            # On prépare l'outil NLP pour le français
+            tb = Blobber(pos_tagger=PatternTagger(), analyzer=PatternAnalyzer())
 
-            nb_tech = len(re.findall(pattern_tech, all_text))
-            nb_tribun = len(re.findall(pattern_tribun, all_text))
-            total_score = nb_tech + nb_tribun
+            # On analyse un échantillon du texte (les 5000 premiers caractères pour que ça reste rapide)
+            # Analyser tout l'historique d'un coup peut prendre quelques secondes
+            sample_text = all_text[:5000]
+            blob = tb(sample_text)
 
-            st.write("### 🧪 Le Style")
+            # TextBlob nous donne deux scores : Polarity (Positif/Négatif) et Subjectivity (Factuel/Opinion)
+            # On s'intéresse à la subjectivité (index 1)
+            subjectivity = blob.sentiment[1]
 
-            if total_score == 0:
-                st.caption("Pas assez de mots-clés pour définir un style.")
+            # Interprétation du score (0 = Très Objectif, 1 = Très Subjectif)
+            score_percent = int(subjectivity * 100)
+
+            # Seuils ajustés pour le discours politique (qui est souvent entre 0.1 et 0.4)
+            if score_percent < 15:
+                label = "🤖 Le Factuel"
+                desc = "Discours très objectif, descriptif, chiffré."
+                color = "blue"
+            elif score_percent < 30:
+                label = "⚖️ L'Analyste"
+                desc = "Équilibre entre faits et opinions."
+                color = "orange"
             else:
-                # 0% = Tout Tribun, 100% = Tout Bureaucrate
-                ratio_tech = (nb_tech / total_score) * 100
+                label = "❤️ Le Passionné"
+                desc = "Discours chargé d'opinions, de jugements et d'émotions."
+                color = "red"
 
-                if ratio_tech > 60:
-                    label = "🤓 Le Notaire"
-                    # Couleur verte pour le chiffre
-                    delta_color = "normal"
-                elif ratio_tech > 40:
-                    label = "⚖️ L'Équilibré"
-                    delta_color = "off"
-                else:
-                    label = "📣 Le Tribun"
-                    delta_color = "inverse"
+            st.metric(
+                label="Ton détecté (Subjectivité)",
+                value=f"{label}",
+                delta=f"{score_percent}/100 Subjectivité"
+            )
+            st.caption(desc)
 
-                st.metric(
-                    label="Profil détecté",
-                    value=label,
-                    delta=f"{int(ratio_tech)}% Technique",
-                    delta_color=delta_color
-                )
+            # Jauge visuelle
+            st.progress(min(score_percent * 2.5 / 100,
+                            1.0))  # On multiplie pour mieux voir les différences (l'échelle politique est souvent basse)
 
-                # Barre de progression
-                st.progress(int(ratio_tech) / 100)
-                st.caption(f"Score : {nb_tech} mots techniques vs {nb_tribun} mots 'valeurs'.")
+            # Petit bonus : Sentiment (Positif vs Négatif)
+            polarity = blob.sentiment[0]
+            if polarity > 0.1:
+                humeur = "Positivité ☀️"
+            elif polarity < -0.1:
+                humeur = "Négativité 🌧️"
+            else:
+                humeur = "Neutre 😐"
 
-    st.markdown("---")
+            st.caption(f"Humeur générale : **{humeur}**")
