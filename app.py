@@ -205,12 +205,15 @@ from collections import Counter
 
 @st.cache_resource
 def load_spacy_model():
+    model_name = "fr_core_news_sm"
     try:
-        if not spacy.util.is_package("fr_core_news_sm"):
-            spacy.cli.download("fr_core_news_sm")
-        return spacy.load("fr_core_news_sm")
-    except Exception as e:
-        return None
+        # On essaie de charger le modèle
+        return spacy.load(model_name)
+    except OSError:
+        # Si ça rate (modèle absent), on le télécharge via la ligne de commande
+        from spacy.cli import download
+        download(model_name)
+        return spacy.load(model_name)
 
 
 # TA LISTE NOIRE (Ajoute des mots ici pour les cacher)
