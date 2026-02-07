@@ -105,29 +105,28 @@ st.sidebar.header("🔍 Filtres")
 
 # --- A. SÉLECTEUR DE LÉGISLATURE ---
 st.sidebar.subheader("📅 Période")
-DATE_BASCULE = datetime(2025, 5, 1)  # Date de début de la nouvelle législature
+DATE_BASCULE = datetime(2025, 5, 1) # Date de début de la nouvelle législature
 
-choix_leg = st.sidebar.multiselect(
-    "Choisir la législature :",
-    ["Législature Actuelle (2025-2029)", "Législature Précédente (2021-2025)"],
-    default=["Législature Actuelle (2025-2029)"]
-)
+# Utilisation de checkbox (cases à cocher) au lieu du multiselect
+check_actuelle = st.sidebar.checkbox("Législature Actuelle (2025-2029)", value=True)
+check_precedente = st.sidebar.checkbox("Législature Précédente (2021-2025)", value=False)
 
-if not choix_leg:
-    st.warning("Veuillez sélectionner une législature.")
+if not check_actuelle and not check_precedente:
+    st.warning("Veuillez cocher au moins une législature.")
     st.stop()
 
-# Filtrage par date (On crée un df réduit 'df' qu'on utilisera ensuite partout)
+# Filtrage par date
 mask_leg = pd.Series([False] * len(df_full), index=df_full.index)
-if "Législature Actuelle (2025-2029)" in choix_leg:
+
+if check_actuelle:
     mask_leg = mask_leg | (df_full['Date_dt'] >= DATE_BASCULE)
-if "Législature Précédente (2021-2025)" in choix_leg:
+if check_precedente:
     mask_leg = mask_leg | (df_full['Date_dt'] < DATE_BASCULE)
 
-df = df_full[mask_leg]  # df contient maintenant uniquement les données de la période choisie
+df = df_full[mask_leg] # df contient maintenant uniquement les données choisies
 
 if df.empty:
-    st.warning("Aucune donnée pour cette législature.")
+    st.warning("Aucune donnée trouvée pour la période sélectionnée.")
     st.stop()
 
 # --- B. SÉLECTEUR ORATEUR & OBJET ---
@@ -174,7 +173,10 @@ if selected_orateur != "Tous les membres" and not df_filtered.empty:
     st.sidebar.markdown(f"**Parti :** {df_filtered['Parti'].iloc[0]}")
 
 # 6. TITRE
-leg_info = " & ".join(["2025+" if "Actuelle" in c else "2021-25" for c in choix_leg])
+legs_selected = []
+if check_actuelle: legs_selected.append("2025+")
+if check_precedente: legs_selected.append("2021-25")
+leg_info = " & ".join(legs_selected)
 
 if selected_orateur == "Tous les membres" and selected_objet == "Tous les objets":
     titre_page = f"🏛️ Recherche Globale ({leg_info})"
