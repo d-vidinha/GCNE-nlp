@@ -1,185 +1,200 @@
 import pdfplumber
 import re
 import pandas as pd
+import os
+import glob
+import csv  # <--- IMPORTANT : Pour gérer les guillemets
 
-PDF_PATH = "bulletin_test.pdf"
+# --- CONFIGURATION ---
+PDF_FOLDER = "pdfs"
+
+MOIS = {
+    "01": "Janvier", "02": "Février", "03": "Mars", "04": "Avril",
+    "05": "Mai", "06": "Juin", "07": "Juillet", "08": "Août",
+    "09": "Septembre", "10": "Octobre", "11": "Novembre", "12": "Décembre"
+}
+
+
+def get_date_from_filename(filepath):
+    filename = os.path.basename(filepath)
+    match = re.search(r'PV_(\d{2})(\d{2})', filename, re.IGNORECASE)
+    if match:
+        year_short = match.group(1)
+        month_digits = match.group(2)
+        full_year = f"20{year_short}"
+        month_name = MOIS.get(month_digits, month_digits)
+        return f"{month_name} {full_year}"
+    return "Date inconnue"
 
 
 def extract_speeches(pdf_path):
     print(f"🔍 Analyse du fichier : {pdf_path}")
-    data = []
+    current_date = get_date_from_filename(pdf_path)
+    print(f"   📅 Date détectée : {current_date}")
 
+    data = []
     current_speaker = None
     current_party = None
+    current_object = "Ouverture / Divers"
 
-    # --- REGEX STRICTE CORRIGÉE ---
-    # 1. (?:^|\n) -> Début de ligne
-    # 2. (M\.|Mme|...) -> Le Titre
-    # 3. \s* -> Espaces optionnels
-    # 4. ([^\n:]*) -> LE NOM (Note l'étoile * au lieu du +)
-    #    Cela veut dire : "Prends le nom s'il y en a un, sinon prends rien (vide)"
-    #    C'est ça qui permet de capter "Le président :" tout seul !
     regex_strict = r'(?:^|\n)(M\.|Mme|Le président|La présidente|Le rapporteur|La rapporteur)\s*([^\n:]*)\s*:\s*[–-]?\s+'
 
     try:
         with pdfplumber.open(pdf_path) as pdf:
-            for i, page in enumerate(pdf.pages[1:]):
+            start_page = 1 if len(pdf.pages) > 1 else 0
 
-                # --- ROGNAGE ---
-                height = page.height
+            for i, page in enumerate(pdf.pages[start_page:]):
                 width = page.width
-                bbox = (0, 50, width, height - 50)
-                cropped_page = page.crop(bbox)
-                text = cropped_page.extract_text()
+                height = page.height
 
-                if not text: continue
+                # --- 1. OBJETS ---
+                bold_objects = []
+                words = page.extract_words(extra_attrs=['fontname'])
+                for w in words:
+                    text = w['text']
+                    font = w['fontname'].lower()
+                    if 'bold' in font or 'bd' in font or 'gras' in font:
+                        found_ids = re.findall(r'\d{2}\.\d{3}', text)
+                        for obj_id in found_ids:
+                            bold_objects.append({'id': obj_id, 'top': w['top']})
+                bold_objects.sort(key=lambda x: x['top'])
 
-                # --- 1. SUPER-COLLE (Pour les noms coupés sur 2 lignes) ---
-                # On recolle les titres suivis de texte, saut de ligne, texte, deux points
-                text_clean = re.sub(r'(?m)^(M\.|Mme|Le|La)\s+([^:\n]+)\n\s*([^:\n]+):', r'\1 \2 \3:', text)
+                # --- 2. SLICING ---
+                slice_points = [50] + [obj['top'] for obj in bold_objects] + [height - 50]
 
-                # --- 2. Correctif virgule ---
-                text_clean = re.sub(r',\s*\n\s*', ', ', text_clean)
-                # -----------------------------
+                for j in range(len(slice_points) - 1):
+                    y_top = slice_points[j]
+                    y_bottom = slice_points[j + 1]
+                    if y_bottom - y_top < 10: continue
+                    if j > 0: current_object = bold_objects[j - 1]['id']
 
-                matches = list(re.finditer(regex_strict, text_clean))
+                    bbox = (0, y_top, width, y_bottom)
+                    cropped_slice = page.crop(bbox)
+                    text = cropped_slice.extract_text()
+                    if not text: continue
 
-                if not matches:
-                    if current_speaker:
-                        append_entry(data, current_speaker, current_party, text)
-                    continue
+                    # --- 3. ORATEURS ---
+                    text_clean = re.sub(r'(?m)^(M\.|Mme|Le|La)\s+([^:\n]+)\n\s*([^:\n]+):', r'\1 \2 \3:', text)
+                    text_clean = re.sub(r',\s*\n\s*', ', ', text_clean)
+                    text_clean = text_clean.replace('’', "'")
 
-                cursor = 0
-                for match in matches:
-                    start_pos = match.start()
-                    end_pos = match.end()
+                    matches = list(re.finditer(regex_strict, text_clean))
 
-                    # TEXTE AVANT
-                    text_before = text_clean[cursor:start_pos].strip()
-                    if text_before and current_speaker:
-                        # Sécurité anti-bruit ("occupe le siège", "La séance est levée", etc.)
-                        if len(text_before) < 100 and (
-                                "occupe le siège" in text_before.lower() or "séance est levée" in text_before.lower()):
-                            pass
-                        else:
-                            append_entry(data, current_speaker, current_party, text_before)
-
-                    # NOUVEAU SPEAKER
-                    titre = match.group(1)
-                    raw_identity = match.group(2).strip()  # Peut être vide maintenant !
-
-                    # On vérifie qu'on n'a pas capté un truc vide bizarre genre "M. :"
-                    if raw_identity == "" and "M." in titre:
-                        # Faux positif probable, on ignore et on traite comme du texte normal
+                    if not matches:
+                        if current_speaker:
+                            append_entry(data, current_speaker, current_party, current_object, current_date, text)
                         continue
 
-                    current_speaker, current_party = parse_identity(titre, raw_identity)
-                    cursor = end_pos
+                    cursor = 0
+                    for match in matches:
+                        start_pos = match.start()
+                        end_pos = match.end()
 
-                # TEXTE APRÈS
-                text_after = text_clean[cursor:].strip()
-                if text_after and current_speaker:
-                    append_entry(data, current_speaker, current_party, text_after)
+                        # Avant
+                        text_before = text_clean[cursor:start_pos].strip()
+                        if text_before and current_speaker:
+                            if len(text_before) < 100 and (
+                                    "occupe le siège" in text_before.lower() or "séance est levée" in text_before.lower()):
+                                pass
+                            else:
+                                append_entry(data, current_speaker, current_party, current_object, current_date,
+                                             text_before)
 
-        # --- FUSION FINALE ---
-        df_raw = pd.DataFrame(data)
-        if df_raw.empty: return df_raw
+                        # Nouveau
+                        titre = match.group(1)
+                        raw_identity = match.group(2).strip()
+                        if raw_identity == "" and "M." in titre: continue
 
-        df_raw['groupe_id'] = (df_raw['Orateur'] != df_raw['Orateur'].shift()).cumsum()
-        df_final = df_raw.groupby(['groupe_id', 'Orateur', 'Parti'])['Texte'].apply(lambda x: " ".join(x)).reset_index()
-        df_final['Texte'] = df_final['Texte'].str.replace('\n', ' ', regex=False)
+                        current_speaker, current_party = parse_identity(titre, raw_identity)
+                        cursor = end_pos
 
-        return df_final.drop(columns=['groupe_id'])
+                    # Après
+                    text_after = text_clean[cursor:].strip()
+                    if text_after and current_speaker:
+                        append_entry(data, current_speaker, current_party, current_object, current_date, text_after)
+
+        cols = ['Date', 'Objet', 'Orateur', 'Parti', 'Texte']
+        if not data: return pd.DataFrame(columns=cols)
+        return pd.DataFrame(data)
 
     except Exception as e:
-        print(f"❌ Erreur : {e}")
-        return pd.DataFrame()
+        print(f"❌ Erreur sur {pdf_path} : {e}")
+        return pd.DataFrame(columns=['Date', 'Objet', 'Orateur', 'Parti', 'Texte'])
 
 
-# --- FONCTION D'ANALYSE MISE À JOUR ---
+# --- HELPERS ---
 def parse_identity(titre, raw_identity):
-    # Nettoyage
-    identity = raw_identity.replace('\n', ' ').strip()
-    identity_lower = identity.lower()
-
-    # 1. CAS PRÉSIDENT DU GRAND CONSEIL (Le président de séance)
-    # Si le titre est juste "Le président" ou "La présidente" (sans nom après souvent)
-    if "président" in titre.lower() or "rapporteur" in titre.lower():
-        if not identity:
-            return titre, "Présidence"
-        else:
-            return f"{titre} {identity}", "Présidence"
-
-    # 2. CAS CONSEIL D'ÉTAT (Présence d'une virgule)
+    identity = raw_identity.replace('\n', ' ').replace('’', "'").strip()
+    if ("président" in titre.lower() or "rapporteur" in titre.lower()) and not identity: return titre, "Présidence"
+    if "(" in identity and ")" in identity:
+        m = re.match(r'(.+?)\s*\((.+?)\)', identity)
+        if m: return f"{titre} {m.group(1).strip()}", m.group(2).strip()
     if "," in identity:
         parts = identity.split(',', 1)
         nom = parts[0].strip()
-        suite = parts[1].strip()  # Ex: "conseiller d'État, chef du Département..."
+        suite = parts[1].strip()
         suite_lower = suite.lower()
-
         speaker = f"{titre} {nom}"
-
-        # --- NOUVELLE LOGIQUE DE PRIORITÉ ---
-
-        # A. D'abord on cherche un DÉPARTEMENT (C'est le plus précis pour les stats)
+        party = "Conseil d'État"
         if "département" in suite_lower:
-            # On cherche tout ce qui commence par "Département..."
             m = re.search(r'(département.*)', suite, re.IGNORECASE)
-            # Si on trouve, on prend. Sinon on garde la suite entière.
             party = m.group(1) if m else suite
-
-        # B. Ensuite la CHANCELLERIE
         elif "chancell" in suite_lower:
             party = "Chancellerie d'État"
-
-        # C. Ensuite la PRÉSIDENCE CE (Seulement si pas de département !)
-        # On fait attention d'exclure "vice-président" pour ne pas faux-positiver
-        elif "président du Conseil" or "présidente du Conseil" in suite_lower and "vice" not in suite_lower:
+        elif "président" in suite_lower and "état" in suite_lower:
             party = "Présidence CE"
-
-        # D. Sinon : CONSEIL D'ÉTAT (Générique)
-        else:
+        elif "conseil" in suite_lower and "état" in suite_lower:
             party = "Conseil d'État"
-
+        elif "président" in suite_lower:
+            party = "Présidence"
         return speaker, party
-
-    # 3. CAS DÉPUTÉ (Parenthèses)
-    if "(" in identity and ")" in identity:
-        m = re.match(r'(.+?)\s*\((.+?)\)', identity)
-        if m:
-            return f"{titre} {m.group(1).strip()}", m.group(2).strip()
-
-    # 4. CAS PAR DÉFAUT
+    if "président" in titre.lower(): return f"{titre} {identity}", "Présidence"
     return f"{titre} {identity}", "Indéterminé"
 
 
-# --- FONCTION D'AJOUT SIMPLE ---
-def append_entry(data, speaker, party, text):
-    # Filtre anti-bruit
-    if len(text) < 3 or "Vote n°" in text or "Résultat du vote" in text:
-        return
-    if text.isupper() and len(text) < 50:  # Titres majuscules
-        return
-
-    data.append({
-        'Orateur': speaker,
-        'Parti': party,
-        'Texte': text
-    })
+def append_entry(data, speaker, party, objet, date, text):
+    if len(text) < 3 or "Vote n°" in text or "Résultat du vote" in text: return
+    if text.isupper() and len(text) < 50: return
+    data.append({'Date': date, 'Objet': objet, 'Orateur': speaker, 'Parti': party, 'Texte': text})
 
 
-# --- EXECUTION ---
+# --- MAIN BLOCK ---
 if __name__ == "__main__":
-    df = extract_speeches(PDF_PATH)
+    pdf_files = glob.glob(os.path.join(PDF_FOLDER, "*.pdf"))
+    if not pdf_files and os.path.exists("bulletin_test.pdf"): pdf_files = ["bulletin_test.pdf"]
 
-    if not df.empty:
-        # --- CORRECTION EXCEL : On remplace les sauts de ligne par des espaces ---
-        df['Texte'] = df['Texte'].str.replace('\n', ' ', regex=False)
-        # -------------------------------------------------------------------------
+    if not pdf_files:
+        print("❌ Aucun fichier PDF trouvé !")
+        exit()
 
-        # On sauvegarde
-        output_file = "discours_grand_conseil.csv"
-        df.to_csv(output_file, index=False, encoding='utf-8-sig')
-        print(f"💾 Sauvegardé dans '{output_file}' (Format optimisé pour Excel)")
+    all_dataframes = []
+    print(f"🚀 Traitement de {len(pdf_files)} fichiers...")
+
+    for pdf_file in pdf_files:
+        df_temp = extract_speeches(pdf_file)
+        if not df_temp.empty:
+            all_dataframes.append(df_temp)
+            print(f"   ✅ {len(df_temp)} entrées.")
+
+    if all_dataframes:
+        print("\n🔄 Fusion...")
+        df_total = pd.concat(all_dataframes, ignore_index=True)
+
+        df_total['groupe_id'] = (df_total['Orateur'] != df_total['Orateur'].shift()).cumsum() + \
+                                (df_total['Objet'] != df_total['Objet'].shift()).cumsum() + \
+                                (df_total['Date'] != df_total['Date'].shift()).cumsum()
+
+        df_final = df_total.groupby(['groupe_id', 'Orateur', 'Parti', 'Objet', 'Date'])['Texte'].apply(
+            lambda x: " ".join(x)).reset_index()
+        df_final['Texte'] = df_final['Texte'].str.replace('\n', ' ', regex=False)
+        df_final = df_final.drop(columns=['groupe_id'])
+
+        output_file = "discours_grand_conseil_complet.csv"
+
+        # --- C'EST ICI QUE LA MAGIE OPÈRE (QUOTING) ---
+        df_final.to_csv(output_file, index=False, encoding='utf-8-sig', quoting=csv.QUOTE_ALL)
+        # ----------------------------------------------
+
+        print(f"🎉 Succès ! Fichier généré : '{output_file}' ({len(df_final)} lignes)")
     else:
-        print("⚠️ Aucune donnée extraite.")
+        print("❌ Aucune donnée.")

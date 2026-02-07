@@ -2,7 +2,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 
 # 1. Chargement des données
-df = pd.read_csv("discours_grand_conseil.csv")
+df = pd.read_csv("discours_grand_conseil_complet.csv")
 
 print(f"--- STATISTIQUES GLOBALES ---")
 print(f"Nombre total d'interventions : {len(df)}")
