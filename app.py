@@ -226,13 +226,13 @@ if not df_filtered.empty:
         # Regex pour ne garder que les mots de 4 lettres et plus
         words = re.findall(r'\b[a-zàâçéèêëîïôûùüÿñ]{4,}\b', all_text)
         meaningful_words = [w for w in words if w not in STOP_WORDS]
-        word_counts = Counter(meaningful_words).most_common(20)
+        word_counts = Counter(meaningful_words).most_common(50)
 
         if word_counts:
             # Création d'un DataFrame propre pour Altair
             df_words = pd.DataFrame(word_counts, columns=['Mot', 'Fréquence'])
 
-            titre_graph = "**Top 20 global**" if selected_orateur == "Tous les membres" else "**Ses mots favoris**"
+            titre_graph = "**Top 50 global**" if selected_orateur == "Tous les membres" else "**Ses mots favoris**"
             st.write(titre_graph)
 
             # Graphique Altair trié
