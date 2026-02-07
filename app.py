@@ -192,7 +192,8 @@ if df_filtered.empty:
     st.stop()
 
 # 7. ANALYSE SÉMANTIQUE
-if not df_filtered.empty and (selected_orateur != "Tous les membres" or selected_objet != "Tous les objets"):
+# On enlève la condition restrictive pour que ça s'affiche tout le temps (même au global)
+if not df_filtered.empty:
     st.subheader("📊 Analyse du vocabulaire")
 
     STOP_WORDS = set([
@@ -214,73 +215,102 @@ if not df_filtered.empty and (selected_orateur != "Tous les membres" or selected
         'question', 'réponse', 'dire', 'dis', 'dit', 'faut', 'fois', 'année', 'années',
         'cette', 'notre', 'votre', 'leur', 'leurs', 'entre', 'encore', 'alors', 'après', 'avant',
         'chers', 'chères', 'collègues', 'groupe', 'socialiste','udc', 'libéral', 'radical', 'centre','vertpop',
-        'parce','peut', 'selon', 'puis',
+        'parce','peut', 'selon', 'puis','allons'
     ])
 
     col1, col2 = st.columns(2)
 
+    # --- COLONNE GAUCHE : LE TOP 20 (S'AFFICHE TOUJOURS) ---
     with col1:
         all_text = " ".join(df_filtered['Texte'].tolist()).lower()
+        # Regex pour ne garder que les mots de 4 lettres et plus
         words = re.findall(r'\b[a-zàâçéèêëîïôûùüÿñ]{4,}\b', all_text)
         meaningful_words = [w for w in words if w not in STOP_WORDS]
         word_counts = Counter(meaningful_words).most_common(20)
 
         if word_counts:
-            # On crée le DataFrame (sans le mettre en index pour Altair)
+            # Création d'un DataFrame propre pour Altair
             df_words = pd.DataFrame(word_counts, columns=['Mot', 'Fréquence'])
 
-            st.write("**Top 20 des mots les plus utilisés :**")
+            titre_graph = "**Top 20 global**" if selected_orateur == "Tous les membres" else "**Ses mots favoris**"
+            st.write(titre_graph)
 
-            # --- CORRECTION DU TRI ---
-            # On utilise Altair pour forcer le tri par fréquence (et non alphabétique)
+            # Graphique Altair trié
             c = alt.Chart(df_words).mark_bar().encode(
                 x='Fréquence',
                 y=alt.Y('Mot', sort='-x')
-                # sort='-x' veut dire : Trie l'axe Y selon les valeurs de X (du plus grand au plus petit)
             )
-
             st.altair_chart(c, use_container_width=True)
-            # -------------------------
-
         else:
             st.info("Données insuffisantes pour l'analyse.")
 
+    # --- COLONNE DROITE : LES STATS ---
     with col2:
+        # CAS 1 : VUE GLOBALE (Tous les membres)
         if selected_orateur == "Tous les membres":
             st.write("**Répartition par Parti :**")
             st.bar_chart(df_filtered['Parti'].value_counts())
+
+        # CAS 2 : VUE DÉTAILLÉE (Un orateur spécifique)
         else:
+            # A. Stats classiques (On les garde !)
             avg_len = df_filtered['Texte'].str.len().mean()
-            st.metric("Longueur moyenne intervention", f"{int(avg_len)} caractères")
-            st.metric("Richesse lexicale (mots clés)", f"{len(meaningful_words)}")
+            st.metric("Longueur moyenne", f"{int(avg_len)} caractères")
+            st.metric("Richesse lexicale", f"{len(set(meaningful_words))} mots uniques")
+
+            st.divider()  # Petite ligne de séparation
+
+            # B. LE COEFFICIENT "BUREAUCRATE vs TRIBUN" 🎭
+            # Mots-clés "Bureaucrate" (Technique, Loi, Procédure)
+            mots_tech = [
+                'article', 'alinéa', 'loi', 'règlement', 'décret', 'amendement',
+                'budget', 'comptes', 'commission', 'rapport', 'considérant',
+                'projet', 'modification', 'technique', 'mise en oeuvre', 'adoption'
+            ]
+            # Mots-clés "Tribun" (Valeurs, Émotion, Peuple)
+            mots_tribun = [
+                'peuple', 'citoyen', 'citoyens', 'liberté', 'justice', 'urgence',
+                'scandale', 'honte', 'grave', 'catastrophe', 'avenir', 'ensemble',
+                'combat', 'valeurs', 'démocratie', 'crise', 'climat', 'planète',
+                'droits', 'inacceptable', 'magnifique', 'solidarité'
+            ]
+
+            # On compte (recherche exacte du mot entier pour éviter les faux positifs)
+            pattern_tech = r'\b(' + '|'.join(mots_tech) + r')\b'
+            pattern_tribun = r'\b(' + '|'.join(mots_tribun) + r')\b'
+
+            nb_tech = len(re.findall(pattern_tech, all_text))
+            nb_tribun = len(re.findall(pattern_tribun, all_text))
+            total_score = nb_tech + nb_tribun
+
+            st.write("### 🧪 Le Style")
+
+            if total_score == 0:
+                st.caption("Pas assez de mots-clés pour définir un style.")
+            else:
+                # 0% = Tout Tribun, 100% = Tout Bureaucrate
+                ratio_tech = (nb_tech / total_score) * 100
+
+                if ratio_tech > 60:
+                    label = "🤓 Le Notaire"
+                    # Couleur verte pour le chiffre
+                    delta_color = "normal"
+                elif ratio_tech > 40:
+                    label = "⚖️ L'Équilibré"
+                    delta_color = "off"
+                else:
+                    label = "📣 Le Tribun"
+                    delta_color = "inverse"
+
+                st.metric(
+                    label="Profil détecté",
+                    value=label,
+                    delta=f"{int(ratio_tech)}% Technique",
+                    delta_color=delta_color
+                )
+
+                # Barre de progression
+                st.progress(int(ratio_tech) / 100)
+                st.caption(f"Score : {nb_tech} mots techniques vs {nb_tribun} mots 'valeurs'.")
 
     st.markdown("---")
-
-# 8. LISTE DES INTERVENTIONS
-if search_query:
-    st.subheader(f"Résultats de recherche ({len(df_filtered)})")
-    for index, row in df_filtered.iterrows():
-        titre = f"📅 {row['Date']} | {row['Orateur']} | 📂 {row['Objet']}"
-        with st.expander(titre):
-            # Pour le surlignage, on utilise re.IGNORECASE si la case n'est pas cochée
-            flags = 0 if case_sensitive else re.IGNORECASE
-            texte = re.sub(f"({re.escape(search_query)})", r"**\1**", row['Texte'], flags=flags)
-            st.markdown(texte)
-
-else:
-    objets_uniques = df_filtered['Objet'].unique()
-
-    st.subheader("Historique des interventions")
-    show_details = st.checkbox(
-        f"📂 Afficher le détail des interventions ({len(df_filtered)} interventions sur {len(objets_uniques)} objets)")
-
-    if show_details:
-        for objet in objets_uniques:
-            subset = df_filtered[df_filtered['Objet'] == objet]
-            titre_dossier = f"📂 Objet {objet} ({len(subset)} interventions)"
-
-            with st.expander(titre_dossier):
-                for _, row in subset.iterrows():
-                    st.markdown(f"**📅 {row['Date']} | 👤 {row['Orateur']} ({row['Parti']})**")
-                    st.write(row['Texte'])
-                    st.divider()
